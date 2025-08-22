@@ -45,6 +45,18 @@
 
     // --- Füzyon ve yumuşatma ---
     const EMA_ALPHA = 0.25;             // 0.15–0.35 arası deneyebilirsin
+    // --- Nota kapısı (gate) ---
+    let gateEnabled = true;            // UI’dan aç/kapat
+    let noteDetected = false;          // anlık durum
+    let noteDb = -120;                 // RMS’in dBFS karşılığı
+    const NOTE_DB_THRESHOLD = -50;     // eşiği buradan ayarla (−55 … −40 arası deneyebilirsin)
+    const NOTE_HOLD_MS = 250;          // histerezis: sönüm için bekleme
+
+    let lastNoteTs = 0;
+
+    function rmsToDb(rms: number) {
+        return 20 * Math.log10((rms || 1e-12));
+    }
 
     onMount(() => () => stop());
 
@@ -82,11 +94,26 @@
 
         // Pitch olayları
         worklet.port.onmessage = (e: MessageEvent) => {
-        const { freq: f } = e.data as { freq: number };
+        const { freq: f, rms } = e.data as { freq: number; rms: number };
+
+        // 1) Pitch'i güncelle
         freq = f || 0;
         const nn = hzToNote(freq);
         note = nn.name;
         cents = nn.cents;
+
+        // 2) Gate mantığı (freq>0 ve seviye>eşik)
+        noteDb = rmsToDb(rms);
+        const now = performance.now();
+
+        if (freq > 0 && noteDb > NOTE_DB_THRESHOLD) {
+            // nota algılandı
+            noteDetected = true;
+            lastNoteTs = now;
+        } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
+            // bir süredir seviye düşük → kapat
+            noteDetected = false;
+        }
         };
 
         // Flux örnekleme zamanlayıcısı
@@ -117,6 +144,14 @@
     function raf() {
         if (!running || !analyser || !ctx) return;
 
+        // GATE: nota yoksa akor/mod hesaplama
+        if (gateEnabled && !noteDetected) {
+            chord = '-';
+            mode = '-';
+            rafId = requestAnimationFrame(raf);
+            return;
+        }
+
         // Tip farklarını susturmak için 'any' cast:
         (analyser as any).getFloatFrequencyData(spec);
         const chroma = spectrumToChroma(spec, ctx.sampleRate);
@@ -133,6 +168,14 @@
     // -------- Spectral flux → BPM --------
    function fluxStep() {
         if (!analyser || !ctx) return;
+        // GATE: nota yoksa BPM için flux işlemi yapma
+
+        if (gateEnabled && !noteDetected) {
+            // İstersen BPM’i temizlemek için şu satırı aç:
+            // bpm = 0;
+            return;
+        }
+
 
         (analyser as any).getFloatFrequencyData(specDb);
         const mag = dbToMag(specDb);
@@ -378,7 +421,7 @@
     }
 
     /**
-         
+        Gpt notları:
         Davranış:
         • 2. tepe gelmeden BPM gösterilmez.
         • Geldikten sonra instant BPM hemen çıkar; ACF devreye girdikçe ağırlık stabil tarafa kayar.
@@ -392,6 +435,14 @@
         Daha hızlı tepki için EMA_ALPHA’yı artır (0.35). Daha pürüzsüz için azalt (0.15).
 
         ACF penceresini uzatmak için maxLen (12 s) değerini büyütebilirsin; gecikme artar ama kararlılık yükselir.
+
+        İnce Ayar
+
+        Eşik (NOTE_DB_THRESHOLD): Odan gürültülüyse -45 dB civarı; zayıf sinyal için -55 dB daha iyi olabilir.
+
+        Histerezis (NOTE_HOLD_MS): Staccato için 200–300 ms, bağlama/legato gibi çalgılar için 400–600 ms deneyebilirsin.
+
+        Sadeleştirmek istersen gate’i sadece freq > 0 şartına bağlayabilirsin (dB kısmını kaldır).
 
     */
 
@@ -407,7 +458,7 @@
       <button class="px-4 py-2 rounded bg-red-600 text-white" on:click={stop}>Durdur</button>
     {/if}
   </div>
-
+  
   <div class="grid grid-cols-2 gap-4">
     <div class="p-4 rounded border">
       <div class="text-sm text-gray-500">Nota</div>
