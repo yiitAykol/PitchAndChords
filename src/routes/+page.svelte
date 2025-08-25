@@ -149,36 +149,11 @@
     }
     
    
-    /**
-        Gpt notları:
-        Davranış:
-        • 2. tepe gelmeden BPM gösterilmez.
-        • Geldikten sonra instant BPM hemen çıkar; ACF devreye girdikçe ağırlık stabil tarafa kayar.
-        • Oktav (×2/÷2) hataları instant BPM’e hizalama ile azaltılır.
-        • Son değer EMA ile yumuşatılır.
-
-        İnce ayar ipuçları
-
-        Çok kararsızsa PEAK_MULT’ı yükselt (1.8–2.0). Çok geç tepki veriyorsa düşür (1.4–1.6).
-
-        Daha hızlı tepki için EMA_ALPHA’yı artır (0.35). Daha pürüzsüz için azalt (0.15).
-
-        ACF penceresini uzatmak için maxLen (12 s) değerini büyütebilirsin; gecikme artar ama kararlılık yükselir.
-
-        İnce Ayar
-
-        Eşik (NOTE_DB_THRESHOLD): Odan gürültülüyse -45 dB civarı; zayıf sinyal için -55 dB daha iyi olabilir.
-
-        Histerezis (NOTE_HOLD_MS): Staccato için 200–300 ms, bağlama/legato gibi çalgılar için 400–600 ms deneyebilirsin.
-
-        Sadeleştirmek istersen gate’i sadece freq > 0 şartına bağlayabilirsin (dB kısmını kaldır).
-
-    */
 
 </script>
 <p>{noteDb}</p>
 <div class="p-6 max-w-3xl mx-auto space-y-4">
-  <h1 class="text-2xl font-semibold">Canlı Müzik Analizi (Pitch / Akor / Mod / BPM)</h1>
+  <h1 class="text-2xl font-semibold">Note Catcher</h1>
 
   <div class="flex gap-2">
     {#if !running}
