@@ -163,8 +163,7 @@
     notesArray = notesArray.slice(n); // baştan at
     }
 
-
-        /** Verilen adı ilk gördüğü yere kadar sil (dahil/haric) */
+    /** Verilen adı ilk gördüğü yere kadar sil (dahil/haric) */
     function clearUntilNote(name: string, inclusive = true) {
         const idx = notesArray.indexOf(name);
         if (idx === -1) return;
