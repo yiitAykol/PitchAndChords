@@ -153,6 +153,26 @@
         notesArray = [...notesArray, name];
         }
     }
+
+    function clearUpToIndex(idxInclusive: number) {
+    if (idxInclusive < 0) return;
+    const n = Math.min(idxInclusive + 1, notesArray.length);
+    notesArray = notesArray.slice(n); // baştan at
+    }
+
+
+        /** Verilen adı ilk gördüğü yere kadar sil (dahil/haric) */
+    function clearUntilNote(name: string, inclusive = true) {
+        const idx = notesArray.indexOf(name);
+        if (idx === -1) return;
+        clearUpToIndex(inclusive ? idx : idx - 1);
+    }
+        /** İlk N notayı sil */
+    function clearFirstN(n: number) {
+        if (n <= 0) return;
+        const k = Math.min(n, notesArray.length);
+        notesArray = notesArray.slice(k);
+    }
     
 </script>
 
