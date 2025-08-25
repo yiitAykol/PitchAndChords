@@ -13,8 +13,6 @@
     let note = '-';
     let cents = 0;
 
-    let chord = '-';
-    let mode  = '-';
     let bpm   = 0;
 
     // --- Analiz parametreleri / tamponlar ---
@@ -30,23 +28,11 @@
     let specDb!: Float32Array;              // dB spektrum (flux hesap için)
     let prevMag: Float32Array | null = null;
     const fluxEnv: number[] = [];
-    let lastBpmUpdate = 0;
+    
 
     // RAF id
     let rafId = 0;
-    // BPM zirve algılama için eklendi
-    const peakTimes: number[] = [];   // saniye cinsinden zaman damgaları
-    const PEAK_MULT = 1.6;
-    let instBpm = 0;                    // iki tepe ile çıkan hızlı tahmin
-
-    // --- Otokorelasyon sonucu ---
-    let stableBpm = 0;                  // uzun pencere tahmini
-    let acfStrength = 0;                // 0..1 arası güven skoru
-
-    // --- Füzyon ve yumuşatma ---
-    const EMA_ALPHA = 0.25;             // 0.15–0.35 arası deneyebilirsin
-    // --- Nota kapısı (gate) ---
-    let gateEnabled = true;            // UI’dan aç/kapat
+   
     let noteDetected = false;          // anlık durum
     let noteDb = -120;                 // RMS’in dBFS karşılığı
     const NOTE_DB_THRESHOLD =-50;     // eşiği buradan ayarla (−55 … −40 arası deneyebilirsin)
