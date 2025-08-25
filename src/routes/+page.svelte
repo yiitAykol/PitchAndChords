@@ -12,6 +12,7 @@
   let running = false;
   let freq = 0;
   let note = '-';
+  let notesArray: string[] = [];
   let cents = 0;
   let noteDb = -120;
   let noteDetected = false;
@@ -144,6 +145,15 @@
     noteDetected = false;
     lastNoteTs = 0;
   }
+
+  // ——— Not ekleme (yalnızca onset veya ad değişiminde) ———
+  function pushNoteIfNew(name: string) {
+    if (!noteDetected || name !== note) {
+      // en sona ekle → 0. index en eski kalır
+      notesArray = [...notesArray, name];
+    }
+  }
+  
 </script>
 
 <p class="opacity-60 text-sm">Seviye (dBFS): {noteDb.toFixed(1)}</p>
