@@ -1,143 +1,153 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+  import { onMount } from 'svelte';
 
-    let ctx: AudioContext | null = null;
-    let micStream: MediaStream | null = null;
-    let worklet: AudioWorkletNode | null = null;
-    let analyser: AnalyserNode | null = null;
+  // ——— Audio graph düğümleri ———
+  let ctx: AudioContext | null = null;
+  let micStream: MediaStream | null = null;
+  let src: MediaStreamAudioSourceNode | null = null;
+  let worklet: AudioWorkletNode | null = null;
+  let analyser: AnalyserNode | null = null;
 
-    let running = false;
+  // ——— UI durum ———
+  let running = false;
+  let freq = 0;
+  let note = '-';
+  let cents = 0;
+  let noteDb = -120;
+  let noteDetected = false;
 
-    // UI göstergeleri
-    let freq = 0;
-    let note = '-';
-    let cents = 0;
+  // ——— Parametreler ———
+  const FFT_SIZE = 4096;
+  const NOTE_DB_THRESHOLD = -50; // daha hassas istiyorsan -60 … -80'e indir
+  const NOTE_HOLD_MS = 250;
 
-    let bpm   = 0;
+  let lastNoteTs = 0;
 
-    // --- Analiz parametreleri / tamponlar ---
-    const FFT_SIZE = 4096;
+  function rmsToDb(rms: number) {
+    return 20 * Math.log10(rms || 1e-12);
+  }
 
-    // Chroma için dB spektrumu
-    let spec!: Float32Array;
+  function hzToNote(f: number) {
+    if (!f || !isFinite(f)) return { name: '-', cents: 0 };
+    const midi = 69 + 12 * Math.log2(f / 440);
+    const rounded = Math.round(midi);
+    const cents = Math.round(
+      1200 * Math.log2(f / (440 * Math.pow(2, (rounded - 69) / 12)))
+    );
+    const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const name = names[(rounded % 12 + 12) % 12] + (Math.floor(rounded / 12) - 1);
+    return { name, cents };
+  }
 
-    // Spectral Flux için
-    const FLUX_HZ = 50;
-    const hopSecFlux = 1 / FLUX_HZ;
-    let fluxTimer: any = null;
-    let specDb!: Float32Array;              // dB spektrum (flux hesap için)
-    let prevMag: Float32Array | null = null;
-    const fluxEnv: number[] = [];
-    
+  onMount(() => {
+    return () => stop();
+  });
 
-    // RAF id
-    let rafId = 0;
-   
-    let noteDetected = false;          // anlık durum
-    let noteDb = -120;                 // RMS’in dBFS karşılığı
-    const NOTE_DB_THRESHOLD =-50;     // eşiği buradan ayarla (−55 … −40 arası deneyebilirsin)
-    const NOTE_HOLD_MS = 250;          // histerezis: sönüm için bekleme
+  async function start() {
+    if (running) return;
 
-    let lastNoteTs = 40;
+    // 1) Context
+    ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-    function rmsToDb(rms: number) {
-        return 20 * Math.log10((rms || 1e-12));
+    // 2) Worklet modülünü yükle
+    await ctx.audioWorklet.addModule(
+      new URL('../lib/analyzer-processor.js', import.meta.url)
+    );
+
+    // 3) ÇIKIŞSIZ Worklet düğümü (numberOfOutputs: 0)
+    worklet = new AudioWorkletNode(ctx, 'analyzer-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 0,             // <— kritik: çıkışsız analiz düğümü
+      processorOptions: { sampleRate: ctx.sampleRate }
+    });
+
+    // 4) Mikrofonu al, kaynak ve analyser oluştur
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false },
+      video: false
+    });
+
+    src = ctx.createMediaStreamSource(micStream);
+
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = FFT_SIZE;
+    analyser.smoothingTimeConstant = 0.4;
+
+    // 5) Bağlantılar (iki kol)
+    //    Kol A: Mic → Worklet (analiz için; ses çıkışı yok)
+    src.connect(worklet);
+
+    //    Kol B: Mic → Analyser (istersen görselleştirme/flux için)
+    src.connect(analyser);
+
+    // 6) Worklet mesajları
+    worklet.port.onmessage = (e: MessageEvent) => {
+      const { freq: f, rms } = e.data as { freq: number; rms: number };
+
+      freq = f || 0;
+      noteDb = rmsToDb(rms);
+
+      const nn = hzToNote(freq);
+      cents = nn.cents;
+
+      const now = performance.now();
+      const gateOk = (freq > 0) && (noteDb > NOTE_DB_THRESHOLD);
+
+      if (gateOk) {
+        noteDetected = true;
+        note = nn.name;
+        lastNoteTs = now;
+      } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
+        noteDetected = false;
+        note = '-';
+      }
+    };
+
+    running = true;
+  }
+
+  function stop() {
+    running = false;
+
+    // Worklet listener'ı bırak
+    if (worklet?.port) {
+     
+      worklet.port.onmessage = null;
     }
 
-    onMount(() => () => stop());
-
-    // -------- Başlat / Durdur --------
-    async function start() {
-        if (running) return;
-
-        ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const sr = ctx.sampleRate;
-
-        // Pitch worklet
-        await ctx.audioWorklet.addModule(new URL('../lib/analyzer-processor.js', import.meta.url));
-        worklet = new AudioWorkletNode(ctx, 'analyzer-processor', {
-        processorOptions: { sampleRate: sr }
-        });
-
-        // Mikrofon
-        micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false },
-        video: false
-        });
-        const src = ctx.createMediaStreamSource(micStream);
-
-        // Analyser (chroma + flux)
-        analyser = ctx.createAnalyser();
-        analyser.fftSize = FFT_SIZE;
-        analyser.smoothingTimeConstant = 0.6;
-
-        spec   = new Float32Array(analyser.frequencyBinCount);
-        specDb = new Float32Array(analyser.frequencyBinCount);
-
-        // Grafik
-        src.connect(worklet);
-        src.connect(analyser);
-
-        // Pitch olayları
-        worklet.port.onmessage = (e: MessageEvent) => {
-        const { freq: f, rms } = e.data as { freq: number; rms: number };
-
-        // 1) Pitch'i güncelle
-        freq = f || 0;
-        const nn = hzToNote(freq);
-        //note = nn.name;
-        cents = nn.cents;
-
-        // 2) Gate mantığı (freq>0 ve seviye>eşik)
-        noteDb = rmsToDb(rms);
-        const now = performance.now();
-
-        if (freq > 0 && noteDb > NOTE_DB_THRESHOLD) {
-            // nota algılandı
-            note = nn.name;
-            noteDetected = true;
-            lastNoteTs = now;
-        } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
-            // bir süredir seviye düşük → kapat
-            noteDetected = false;
-        }
-        };
-
-        running = true;
-        
+    // Akışları durdur
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      micStream = null;
     }
 
-    function stop() {
-        running = false;
+    // Düğümleri ayır
+    try { src?.disconnect(); } catch {}
+    try { worklet?.disconnect(); } catch {}
+    try { analyser?.disconnect(); } catch {}
 
-        if (rafId) cancelAnimationFrame(rafId);
-        if (fluxTimer) { clearInterval(fluxTimer); fluxTimer = null; }
-        prevMag = null;
-        fluxEnv.length = 0;
+    src = null;
+    worklet = null;
+    analyser = null;
 
-        if (micStream) {
-        micStream.getTracks().forEach(t => t.stop());
-        micStream = null;
-        }
-        if (worklet) { worklet.disconnect(); worklet = null; }
-        if (analyser) { analyser.disconnect(); analyser = null; }
-        if (ctx) { ctx.close(); ctx = null; }
+    // Context'i kapat
+    if (ctx) {
+      ctx.close();
+      ctx = null;
     }
 
-    function hzToNote(f: number) {
-        if (!f || !isFinite(f)) return { name: '-', cents: 0 };
-        const midi = 69 + 12 * Math.log2(f / 440);
-        const rounded = Math.round(midi);
-        const cents = Math.round(1200 * Math.log2(f / (440 * Math.pow(2, (rounded - 69) / 12))));
-        const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-        const name = names[(rounded % 12 + 12) % 12] + (Math.floor(rounded / 12) - 1);
-        return { name, cents };
-    }
-    
-   
-
+    // UI sıfırla
+    freq = 0;
+    note = '-';
+    cents = 0;
+    noteDb = -120;
+    noteDetected = false;
+    lastNoteTs = 0;
+  }
 </script>
-<p>{noteDb}</p>
+
+<p class="opacity-60 text-sm">Seviye (dBFS): {noteDb.toFixed(1)}</p>
+
 <div class="p-6 max-w-3xl mx-auto space-y-4">
   <h1 class="text-2xl font-semibold">Note Catcher</h1>
 
@@ -148,30 +158,18 @@
       <button class="px-4 py-2 rounded bg-red-600 text-white" on:click={stop}>Durdur</button>
     {/if}
   </div>
-  
+
   <div class="grid grid-cols-2 gap-4">
     <div class="p-4 rounded border">
-      <div class="text-sm text-gray-500">Nota</div>
+      <div class="text-sm opacity-60">Nota</div>
       <div class="text-3xl font-bold">{note}</div>
       <div class="text-sm">Frekans: {freq.toFixed(1)} Hz | Cents: {cents}</div>
     </div>
 
     <div class="p-4 rounded border">
-      <div class="text-sm text-gray-500">BPM</div>
-      <div class="text-3xl font-bold">{bpm || '-'}</div>
+      <div class="text-sm opacity-60">Algı durumu</div>
+      <div class="text-3xl font-bold">{noteDetected ? '✓' : '—'}</div>
     </div>
-    <!-- Aşağıdaki kısımlar henüz tamamlanmadı, sadece gösterim amaçlıdır 
-    <div class="p-4 rounded border">
-      <div class="text-sm text-gray-500">Akor</div>
-      <div class="text-3xl font-bold">{chord}</div>
-      <div class="text-xs text-gray-500">Triad korelasyonu (maj/min/dim/aug)</div>
-    </div>
-
-    <div class="p-4 rounded border">
-      <div class="text-sm text-gray-500">Mod</div>
-      <div class="text-3xl font-bold">{mode}</div>
-      <div class="text-xs text-gray-500">Kilise modları (Ionian…Locrian)</div>
-    </div>-->
   </div>
 </div>
 
