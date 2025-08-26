@@ -18,12 +18,24 @@
     let noteDb = -120;
     let noteDetected = false;
     let label = '';
+    let intervalArray: string[] = [];
     // ——— Parametreler ———
     const FFT_SIZE = 4096;
     const NOTE_DB_THRESHOLD = -50; // daha hassas istiyorsan -60 … -80'e indir
     const NOTE_HOLD_MS = 250;
+    
+    // ——— Tipler ———
+    type Dir = '↑' | '↓' | '→';
+    type IntervalName = 'P1' | 'm2' | 'M2' | 'm3' | 'M3' | 'P4' | 'TT' | 'P5' | 'm6' | 'M6' | 'm7' | 'M7';
+    type IntervalLabel = `${Dir}${IntervalName}`;
 
     let lastNoteTs = 0;
+    type IntervalResult = {
+        from: string;
+        to: string;
+        semitones: number; // pozitif/negatif tamsayı
+        label: string;     // örn: "↑M3"    
+    };
 
     function rmsToDb(rms: number) {
         return 20 * Math.log10(rms || 1e-12);
@@ -46,6 +58,7 @@
     });
 
     async function start() {
+        
         if (running) return;
 
         // 1) Context
@@ -106,7 +119,7 @@
                     pushNoteIfNew(note);
                     const intervalResult = intervalFromArray(notesArray, lastPushedNote, note);
                     label = intervalResult ? intervalResult.label : '';
-                
+                    intervalArray = [...intervalArray, label];
                 }
                 lastNoteTs = now;
 
@@ -191,27 +204,39 @@
         lastPushedNote = null;
     }
         
-        // arr: ['C4','E4','G4', ...], a/b: 'C4' gibi
-    export function intervalFromArray(arr: string[], a: string, b: string) {
-        const toMidi = (s: string) => {
+     // ——— Fonksiyon ———
+    export function intervalFromArray(
+        arr: string[],
+        a: string,
+        b: string
+        ): IntervalResult | null {
+
+        const toMidi = (s: string): number => {
             const m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(s);
             if (!m) return NaN;
-            const pcMap: Record<string, number> = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+            const pcMap: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
             let pc = pcMap[m[1].toUpperCase()];
-            if (m[2] === '#') pc += 1; else if (m[2] === 'b') pc -= 1;
+            if (m[2] === '#') pc += 1;
+            else if (m[2] === 'b') pc -= 1;
             return (parseInt(m[3], 10) + 1) * 12 + ((pc % 12) + 12) % 12;
         };
 
-        const i = arr.indexOf(a);  // son görünüm için lastIndexOf(a)
-        const j = arr.indexOf(b);  // son görünüm için lastIndexOf(b)
+        const i = arr.indexOf(a);   // son görünüm için: arr.lastIndexOf(a)
+        const j = arr.indexOf(b);   // son görünüm için: arr.lastIndexOf(b)
         if (i < 0 || j < 0) return null;
 
-        const semis = toMidi(arr[j]) - toMidi(arr[i]);          // yönlü yarıton
-        const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'];
-        const dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
-        const label = dir + names[Math.abs(semis) % 12];
+        const mi = toMidi(arr[i]);
+        const mj = toMidi(arr[j]);
+        if (!Number.isFinite(mi) || !Number.isFinite(mj)) return null;
 
-        return { from: arr[i], to: arr[j], semitones: semis, label }; // örn: {… , semitones:+4, label:'↑M3'}
+        const semis = mj - mi; // yönlü yarıton
+
+        const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'] as const;
+        const dir: Dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
+        const name: IntervalName = names[Math.abs(semis) % 12];
+        const label: IntervalLabel = `${dir}${name}`;
+
+        return { from: arr[i], to: arr[j], semitones: semis, label };
     }
 
 </script>
