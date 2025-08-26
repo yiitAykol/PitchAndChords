@@ -17,7 +17,7 @@
     let cents = 0;
     let noteDb = -120;
     let noteDetected = false;
-
+    let label = '';
     // ——— Parametreler ———
     const FFT_SIZE = 4096;
     const NOTE_DB_THRESHOLD = -50; // daha hassas istiyorsan -60 … -80'e indir
@@ -96,10 +96,20 @@
             const gateOk = (freq > 0) && (noteDb > NOTE_DB_THRESHOLD);
 
             if (gateOk) {
+
                 noteDetected = true;
+                lastPushedNote = note;
+
                 note = nn.name;
-                pushNoteIfNew(note);
+                if(note !== lastPushedNote)
+                {
+                    pushNoteIfNew(note);
+                    const intervalResult = intervalFromArray(notesArray, lastPushedNote, note);
+                    label = intervalResult ? intervalResult.label : '';
+                
+                }
                 lastNoteTs = now;
+
             } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
                 noteDetected = false;
                 note = '-';
@@ -153,7 +163,7 @@
         if (!noteDetected || name !== lastPushedNote) {
             // en sona ekle → 0. index en eski kalır
             notesArray = [...notesArray, name];
-            lastPushedNote = name;
+            //lastPushedNote = name;
         }
     }
 
@@ -180,10 +190,34 @@
         notesArray = [];
         lastPushedNote = null;
     }
+        
+        // arr: ['C4','E4','G4', ...], a/b: 'C4' gibi
+    export function intervalFromArray(arr: string[], a: string, b: string) {
+        const toMidi = (s: string) => {
+            const m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(s);
+            if (!m) return NaN;
+            const pcMap: Record<string, number> = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+            let pc = pcMap[m[1].toUpperCase()];
+            if (m[2] === '#') pc += 1; else if (m[2] === 'b') pc -= 1;
+            return (parseInt(m[3], 10) + 1) * 12 + ((pc % 12) + 12) % 12;
+        };
+
+        const i = arr.indexOf(a);  // son görünüm için lastIndexOf(a)
+        const j = arr.indexOf(b);  // son görünüm için lastIndexOf(b)
+        if (i < 0 || j < 0) return null;
+
+        const semis = toMidi(arr[j]) - toMidi(arr[i]);          // yönlü yarıton
+        const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'];
+        const dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
+        const label = dir + names[Math.abs(semis) % 12];
+
+        return { from: arr[i], to: arr[j], semitones: semis, label }; // örn: {… , semitones:+4, label:'↑M3'}
+    }
+
 </script>
 
 <p class="opacity-60 text-sm">Seviye (dBFS): {noteDb.toFixed(1)}</p>
-
+<p class="opacity-60 text-sm">label {label}</p>
 <div class="p-6 max-w-3xl mx-auto space-y-4">
     <h1 class="text-2xl font-semibold">Note Catcher</h1>
 
