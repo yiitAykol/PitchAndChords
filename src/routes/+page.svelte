@@ -1,299 +1,299 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+  import { onMount } from 'svelte';
 
-    // ——— Audio graph düğümleri ———
-    let ctx: AudioContext | null = null;
-    let micStream: MediaStream | null = null;
-    let src: MediaStreamAudioSourceNode | null = null;
-    let worklet: AudioWorkletNode | null = null;
-    let analyser: AnalyserNode | null = null;
+  // ——— Audio graph düğümleri ———
+  let ctx: AudioContext | null = null;
+  let micStream: MediaStream | null = null;
+  let src: MediaStreamAudioSourceNode | null = null;
+  let worklet: AudioWorkletNode | null = null;
+  let analyser: AnalyserNode | null = null;
 
-    // ——— UI durum ———
-    let running = false;
-    let freq = 0;
-    let note = '-';
-    let notesArray: string[] = [];
-    let lastPushedNote: string | null = null; // aynı “süreğen” notayı tekrar eklememek için
-    let cents = 0;
-    let noteDb = -120;
-    let noteDetected = false;
-    let label = '';
-    let intervalArray: string[] = [];
-    // ——— Parametreler ———
-    const FFT_SIZE = 4096;
-    const NOTE_DB_THRESHOLD = -50; // daha hassas istiyorsan -60 … -80'e indir
-    const NOTE_HOLD_MS = 250;
-    
-    // ——— Tipler ———
-    type Dir = '↑' | '↓' | '→';
-    type IntervalName = 'P1' | 'm2' | 'M2' | 'm3' | 'M3' | 'P4' | 'TT' | 'P5' | 'm6' | 'M6' | 'm7' | 'M7';
-    type IntervalLabel = `${Dir}${IntervalName}`;
+  // ——— UI durum ———
+  let running = false;
+  let freq = 0;
+  let note = '-';
+  let notesArray: string[] = [];
+  let cents = 0;
+  let noteDb = -120;
+  let noteDetected = false;
+  let label = '';
+  let intervalArray: string[] = [];
 
-    let lastNoteTs = 0;
-    type IntervalResult = {
-        from: string;
-        to: string;
-        semitones: number; // pozitif/negatif tamsayı
-        label: string;     // örn: "↑M3"    
-    };
+  // ——— Parametreler ———
+  const FFT_SIZE = 4096;
+  const NOTE_DB_THRESHOLD = -50;      // açılma eşiği
+  const NOTE_DB_RELEASE   = -56;      // kapama eşiği (Schmitt trigger)
+  const NOTE_HOLD_MS = 250;           // sessizlikte notayı '-' yapmadan önce bekleme
+  const MIN_CENTS_CHANGE = 15;        // küçük sapmaları “yeni nota” sayma
 
-    function rmsToDb(rms: number) {
-        return 20 * Math.log10(rms || 1e-12);
-    }
+  // ——— Sabitler ———
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'] as const;
 
-    function hzToNote(f: number) {
-        if (!f || !isFinite(f)) return { name: '-', cents: 0 };
-            const midi = 69 + 12 * Math.log2(f / 440);
-            const rounded = Math.round(midi);
-            const cents = Math.round(
-            1200 * Math.log2(f / (440 * Math.pow(2, (rounded - 69) / 12)))
-        );
-        const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-        const name = names[(rounded % 12 + 12) % 12] + (Math.floor(rounded / 12) - 1);
-        return { name, cents };
-    }
+  // ——— Tipler ———
+  type Dir = '↑' | '↓' | '→';
+  type IntervalName = 'P1' | 'm2' | 'M2' | 'm3' | 'M3' | 'P4' | 'TT' | 'P5' | 'm6' | 'M6' | 'm7' | 'M7';
+  type IntervalLabel = `${Dir}${IntervalName}`;
 
-    onMount(() => {
-        return () => stop();
-    });
+  let lastNoteTs = 0;
+  let gateOpen = false;
 
-    async function start() {
-        
-        if (running) return;
+  type IntervalResult = {
+    from: string;
+    to: string;
+    semitones: number; // pozitif/negatif tamsayı
+    label: string;     // örn: "↑M3"
+  };
 
-        // 1) Context
-        ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  // ——— Yardımcılar ———
+  function rmsToDb(rms: number) {
+    return 20 * Math.log10(rms || 1e-12);
+  }
 
-        // 2) Worklet modülünü yükle
-        await ctx.audioWorklet.addModule(
-            new URL('../lib/analyzer-processor.js', import.meta.url)
-        );
+  function hzToNote(f: number) {
+    if (!f || !isFinite(f)) return { name: '-', cents: 0 };
+    const midi = 69 + 12 * Math.log2(f / 440);
+    const rounded = Math.round(midi);
+    const cents = Math.round(
+      1200 * Math.log2(f / (440 * Math.pow(2, (rounded - 69) / 12)))
+    );
+    const name = NOTE_NAMES[(rounded % 12 + 12) % 12] + (Math.floor(rounded / 12) - 1);
+    return { name, cents };
+  }
 
-        // 3) ÇIKIŞSIZ Worklet düğümü (numberOfOutputs: 0)
-        worklet = new AudioWorkletNode(ctx, 'analyzer-processor', {
-            numberOfInputs: 1,
-            numberOfOutputs: 0,             // <— kritik: çıkışsız analiz düğümü
-            processorOptions: { sampleRate: ctx.sampleRate }
-        });
+  function toMidiStrict(s: string): number {
+    const m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(s);
+    if (!m) return NaN;
+    const pcMap: Record<string, number> = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+    let pc = pcMap[m[1].toUpperCase()];
+    if (m[2] === '#') pc += 1;
+    else if (m[2] === 'b') pc -= 1;
+    return (parseInt(m[3], 10) + 1) * 12 + ((pc % 12) + 12) % 12;
+  }
 
-        // 4) Mikrofonu al, kaynak ve analyser oluştur
-        micStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: false, noiseSuppression: false },
-            video: false
-        });
+  // ——— Sadece iki nota ile (prev → current) aralık etiketi ———
+  export function intervalLabel(a: string, b: string): IntervalResult | null {
+    if (!a || !b || a === '-' || b === '-') return null;
+    const mi = toMidiStrict(a);
+    const mj = toMidiStrict(b);
+    if (!Number.isFinite(mi) || !Number.isFinite(mj)) return null;
 
-        src = ctx.createMediaStreamSource(micStream);
+    const semis = mj - mi; // yönlü yarıton
+    const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'] as const;
+    const dir: Dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
+    const name: IntervalName = names[Math.abs(semis) % 12];
+    const lab: IntervalLabel = `${dir}${name}`;
+    return { from: a, to: b, semitones: semis, label: lab };
+  }
 
-        analyser = ctx.createAnalyser();
-        analyser.fftSize = FFT_SIZE;
-        analyser.smoothingTimeConstant = 0.4;
+  onMount(() => {
+    return () => stop();
+  });
 
-        // 5) Bağlantılar (iki kol)
-        //    Kol A: Mic → Worklet (analiz için; ses çıkışı yok)
-        src.connect(worklet);
+  async function start() {
+    if (running) return;
+    try {
+      // 1) Context
+      ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-        //    Kol B: Mic → Analyser (istersen görselleştirme/flux için)
-        src.connect(analyser);
+      // 2) Worklet modülü
+      await ctx.audioWorklet.addModule(new URL('../lib/analyzer-processor.js', import.meta.url));
 
-        // 6) Worklet mesajları
-        worklet.port.onmessage = (e: MessageEvent) => {
-            const { freq: f, rms } = e.data as { freq: number; rms: number };
+      // 3) ÇIKIŞSIZ Worklet düğümü
+      worklet = new AudioWorkletNode(ctx, 'analyzer-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0, // analiz düğümü
+        processorOptions: { sampleRate: ctx.sampleRate }
+      });
 
-            freq = f || 0;
-            noteDb = rmsToDb(rms);
+      // 4) Mikrofon
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false },
+        video: false
+      });
 
-            const nn = hzToNote(freq);
-            cents = nn.cents;
+      src = ctx.createMediaStreamSource(micStream);
 
-            const now = performance.now();
-            const gateOk = (freq > 0) && (noteDb > NOTE_DB_THRESHOLD);
+      // 5) (İsteğe bağlı) görselleştirme için analyser
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.4;
 
-            if (gateOk) {
+      // 6) Bağlantılar
+      src.connect(worklet);
+      // src.connect(analyser); // şimdilik kapalı tutabilirsin
 
-                noteDetected = true;
-                lastPushedNote = note;
+      // 7) Mesajlar
+      worklet.port.onmessage = (e: MessageEvent) => {
+        const { freq: f, rms } = e.data as { freq: number; rms: number };
 
-                note = nn.name;
-                if(note !== lastPushedNote)
-                {
-                    pushNoteIfNew(note);
-                    const intervalResult = intervalFromArray(notesArray, lastPushedNote, note);
-                    label = intervalResult ? intervalResult.label : '';
-                    intervalArray = [...intervalArray, label];
-                }
-                lastNoteTs = now;
+        freq = f || 0;
+        const levelDb = rmsToDb(rms);
+        noteDb = levelDb;
 
-            } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
-                noteDetected = false;
-                note = '-';
+        // Schmitt trigger benzeri gate
+        if (!gateOpen && (freq > 0) && levelDb > NOTE_DB_THRESHOLD) gateOpen = true;
+        if (gateOpen && ((freq <= 0) || levelDb < NOTE_DB_RELEASE)) gateOpen = false;
+
+        const nn = hzToNote(freq);
+        cents = nn.cents;
+
+        const prev = note;
+        const now = performance.now();
+
+        if (gateOpen) {
+          noteDetected = true;
+
+          // İsim değişimi varsa yeni nota kabul et
+          const nameChanged = nn.name !== prev;
+
+          if (nameChanged) {
+            note = nn.name;
+            notesArray = [...notesArray, note];
+
+            const res = intervalLabel(prev, note);
+            if (res) {
+              label = res.label;
+              intervalArray = [...intervalArray, res.label];
             }
-        };
+          } else {
+            // Aynı isim: küçük cents kaymalarını yoksay
+            if (Math.abs(cents) < MIN_CENTS_CHANGE) {
+              // stabil durumda etiketi koru (istersen boşalt)
+              // label = '';
+            }
+            note = nn.name;
+          }
 
-        running = true;
+          lastNoteTs = now;
+        } else if (noteDetected && now - lastNoteTs > NOTE_HOLD_MS) {
+          noteDetected = false;
+          note = '-';
+          label = '';
+        }
+      };
+
+      running = true;
+    } catch (err) {
+      console.error(err);
+      await stop();
+      label = 'Mikrofon veya worklet başlatılamadı.';
+    }
+  }
+
+  function stop() {
+    if (!running && !ctx && !micStream) return;
+    running = false;
+
+    try { if (worklet?.port) worklet.port.onmessage = null; } catch {}
+    try { src?.disconnect(); } catch {}
+    try { worklet?.disconnect(); } catch {}
+    try { analyser?.disconnect(); } catch {}
+
+    if (micStream) {
+      micStream.getTracks().forEach(t => t.stop());
+      micStream = null;
     }
 
-    function stop() {
-        running = false;
+    src = null;
+    worklet = null;
+    analyser = null;
 
-        // Worklet listener'ı bırak
-        if (worklet?.port) {
-        
-        worklet.port.onmessage = null;
-        }
-
-        // Akışları durdur
-        if (micStream) {
-        micStream.getTracks().forEach((t) => t.stop());
-        micStream = null;
-        }
-
-        // Düğümleri ayır
-        try { src?.disconnect(); } catch {}
-        try { worklet?.disconnect(); } catch {}
-        try { analyser?.disconnect(); } catch {}
-
-        src = null;
-        worklet = null;
-        analyser = null;
-
-        // Context'i kapat
-        if (ctx) {
-        ctx.close();
-        ctx = null;
-        }
-
-        // UI sıfırla
-        freq = 0;
-        note = '-';
-        cents = 0;
-        noteDb = -120;
-        noteDetected = false;
-        lastNoteTs = 0;
+    if (ctx) {
+      ctx.close().catch(() => {});
+      ctx = null;
     }
 
-    // ——— Not ekleme (yalnızca onset veya ad değişiminde) ———
-    function pushNoteIfNew(name: string) {
-        if (!noteDetected || name !== lastPushedNote) {
-            // en sona ekle → 0. index en eski kalır
-            notesArray = [...notesArray, name];
-            //lastPushedNote = name;
-        }
-    }
+    // Durum sıfırla (not listesi kullanıcı isterse düğmelerle temizler)
+    freq = 0;
+    note = '-';
+    cents = 0;
+    noteDb = -120;
+    noteDetected = false;
+    label = '';
+    lastNoteTs = 0;
+    gateOpen = false;
+  }
 
-    function clearUpToIndex(idxInclusive: number) {
+  // ——— Not listesi yardımcıları ———
+  function clearUpToIndex(idxInclusive: number) {
     if (idxInclusive < 0) return;
     const n = Math.min(idxInclusive + 1, notesArray.length);
     notesArray = notesArray.slice(n); // baştan at
-    }
+  }
 
-    /** Verilen adı ilk gördüğü yere kadar sil (dahil/haric) */
-    function clearUntilNote(name: string, inclusive = true) {
-        const idx = notesArray.indexOf(name);
-        if (idx === -1) return;
-        clearUpToIndex(inclusive ? idx : idx - 1);
-    }
-        /** İlk N notayı sil */
-    function clearFirstN(n: number) {
-        if (n <= 0) return;
-        const k = Math.min(n, notesArray.length);
-        notesArray = notesArray.slice(k);
-    }
-    
-    function resetNotes() {
-        notesArray = [];
-        lastPushedNote = null;
-    }
-        
-     // ——— Fonksiyon ———
-    export function intervalFromArray(
-        arr: string[],
-        a: string,
-        b: string
-        ): IntervalResult | null {
+  /** Verilen adı ilk gördüğü yere kadar sil (dahil/haric) */
+  function clearUntilNote(name: string, inclusive = true) {
+    const idx = notesArray.indexOf(name);
+    if (idx === -1) return;
+    clearUpToIndex(inclusive ? idx : idx - 1);
+  }
 
-        const toMidi = (s: string): number => {
-            const m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(s);
-            if (!m) return NaN;
-            const pcMap: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-            let pc = pcMap[m[1].toUpperCase()];
-            if (m[2] === '#') pc += 1;
-            else if (m[2] === 'b') pc -= 1;
-            return (parseInt(m[3], 10) + 1) * 12 + ((pc % 12) + 12) % 12;
-        };
+  /** İlk N notayı sil */
+  function clearFirstN(n: number) {
+    if (n <= 0) return;
+    const k = Math.min(n, notesArray.length);
+    notesArray = notesArray.slice(k);
+  }
 
-        const i = arr.indexOf(a);   // son görünüm için: arr.lastIndexOf(a)
-        const j = arr.indexOf(b);   // son görünüm için: arr.lastIndexOf(b)
-        if (i < 0 || j < 0) return null;
-
-        const mi = toMidi(arr[i]);
-        const mj = toMidi(arr[j]);
-        if (!Number.isFinite(mi) || !Number.isFinite(mj)) return null;
-
-        const semis = mj - mi; // yönlü yarıton
-
-        const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'] as const;
-        const dir: Dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
-        const name: IntervalName = names[Math.abs(semis) % 12];
-        const label: IntervalLabel = `${dir}${name}`;
-
-        return { from: arr[i], to: arr[j], semitones: semis, label };
-    }
-
+  function resetNotes() {
+    notesArray = [];
+  }
 </script>
 
 <p class="opacity-60 text-sm">Seviye (dBFS): {noteDb.toFixed(1)}</p>
 <p class="opacity-60 text-sm">label {label}</p>
+
 <div class="p-6 max-w-3xl mx-auto space-y-4">
-    <h1 class="text-2xl font-semibold">Note Catcher</h1>
+  <h1 class="text-2xl font-semibold">Note Catcher</h1>
 
-    <div class="flex gap-2">
-        {#if !running}
-        <button class="px-4 py-2 rounded bg-green-600 text-white" on:click={start}>Başlat</button>
-        {:else}
-        <button class="px-4 py-2 rounded bg-red-600 text-white" on:click={stop}>Durdur</button>
-        {/if}
+  <div class="flex gap-2">
+    {#if !running}
+      <button class="px-4 py-2 rounded bg-green-600 text-white" on:click={start}>Başlat</button>
+    {:else}
+      <button class="px-4 py-2 rounded bg-red-600 text-white" on:click={stop}>Durdur</button>
+    {/if}
+  </div>
+
+  <div class="grid grid-cols-2 gap-4">
+    <div class="p-4 rounded border">
+      <div class="text-sm opacity-60">Nota</div>
+      <div class="text-3xl font-bold">{note}</div>
+      <div class="text-sm">Frekans: {freq.toFixed(1)} Hz | Cents: {cents}</div>
     </div>
 
-    <div class="grid grid-cols-2 gap-4">
-        <div class="p-4 rounded border">
-        <div class="text-sm opacity-60">Nota</div>
-        <div class="text-3xl font-bold">{note}</div>
-        <div class="text-sm">Frekans: {freq.toFixed(1)} Hz | Cents: {cents}</div>
-        </div>
-
-        <div class="p-4 rounded border">
-        <div class="text-sm opacity-60">Algı durumu</div>
-        <div class="text-3xl font-bold">{noteDetected ? '✓' : '—'}</div>
-        </div>
+    <div class="p-4 rounded border">
+      <div class="text-sm opacity-60">Algı durumu</div>
+      <div class="text-3xl font-bold">{noteDetected ? '✓' : '—'}</div>
     </div>
-    
-    <!-- Not Listesi -->
-    <div class="p-4 rounded border space-y-3">
-        <div class="flex items-center justify-between">
-        <div class="text-sm opacity-60">Not Listesi (0 = en eski)</div>
-        <div class="flex gap-2">
-            <button class="px-3 py-1 rounded border" on:click={() => clearFirstN(1)}>İlk 1'i sil</button>
-            <button class="px-3 py-1 rounded border" on:click={() => clearFirstN(4)}>İlk 4'ü sil</button>
-        </div>
-        </div>
+  </div>
 
-        {#if notesArray.length === 0}
-        <div class="text-sm opacity-60">Henüz kayıt yok.</div>
-        {:else}
-        <ul class="space-y-1">
-            {#each notesArray as n, i}
-            <li class="flex items-center justify-between gap-3">
-                <span class="font-mono">{i}.</span>
-                <span class="flex-1">{n}</span>
-                <button class="text-xs px-2 py-1 rounded border"
-                        on:click={() => clearUpToIndex(i)}>
-                ⟵ buraya kadar sil
-                </button>
-            </li>
-            {/each}
-        </ul>
-        {/if}
+  <!-- Not Listesi -->
+  <div class="p-4 rounded border space-y-3">
+    <div class="flex items-center justify-between">
+      <div class="text-sm opacity-60">Not Listesi (0 = en eski)</div>
+      <div class="flex gap-2">
+        <button class="px-3 py-1 rounded border" on:click={() => clearFirstN(1)}>İlk 1'i sil</button>
+        <button class="px-3 py-1 rounded border" on:click={() => clearFirstN(4)}>İlk 4'ü sil</button>
+        <button class="px-3 py-1 rounded border" on:click={resetNotes}>Hepsini sil</button>
+      </div>
     </div>
+
+    {#if notesArray.length === 0}
+      <div class="text-sm opacity-60">Henüz kayıt yok.</div>
+    {:else}
+      <ul class="space-y-1">
+        {#each notesArray as n, i}
+          <li class="flex items-center justify-between gap-3">
+            <span class="font-mono">{i}.</span>
+            <span class="flex-1">{n}</span>
+            <button class="text-xs px-2 py-1 rounded border" on:click={() => clearUpToIndex(i)}>
+              ⟵ buraya kadar sil
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
 </div>
 
 <style>
