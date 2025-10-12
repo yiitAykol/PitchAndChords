@@ -28,11 +28,24 @@
 
   // ——— Sabitler ———
   const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'] as const;
+  const INTERVAL_INFO = [
+    { label: 'P1', quality: 'P', baseNumber: 1 },
+    { label: 'm2', quality: 'm', baseNumber: 2 },
+    { label: 'M2', quality: 'M', baseNumber: 2 },
+    { label: 'm3', quality: 'm', baseNumber: 3 },
+    { label: 'M3', quality: 'M', baseNumber: 3 },
+    { label: 'P4', quality: 'P', baseNumber: 4 },
+    { label: 'TT', quality: undefined, baseNumber: 4 },
+    { label: 'P5', quality: 'P', baseNumber: 5 },
+    { label: 'm6', quality: 'm', baseNumber: 6 },
+    { label: 'M6', quality: 'M', baseNumber: 6 },
+    { label: 'm7', quality: 'm', baseNumber: 7 },
+    { label: 'M7', quality: 'M', baseNumber: 7 }
+  ] as const;
 
   // ——— Tipler ———
   type Dir = '↑' | '↓' | '→';
-  type IntervalName = 'P1' | 'm2' | 'M2' | 'm3' | 'M3' | 'P4' | 'TT' | 'P5' | 'm6' | 'M6' | 'm7' | 'M7';
-  type IntervalLabel = `${Dir}${IntervalName}`;
+  type IntervalMeta = (typeof INTERVAL_INFO)[number];
 
   let lastNoteTs = 0;
   let gateOpen = false;
@@ -41,7 +54,9 @@
     from: string;
     to: string;
     semitones: number; // pozitif/negatif tamsayı
-    label: string;     // örn: "↑M3"
+    octaves: number;   // tam oktav sayısı
+    baseLabel: string; // yönlü basit aralık (örn: "↑M3")
+    label: string;     // kullanıcıya gösterilecek tam etiket (örn: "↑M10")
   };
 
   // ——— Yardımcılar ———
@@ -78,11 +93,22 @@
     if (!Number.isFinite(mi) || !Number.isFinite(mj)) return null;
 
     const semis = mj - mi; // yönlü yarıton
-    const names = ['P1','m2','M2','m3','M3','P4','TT','P5','m6','M6','m7','M7'] as const;
     const dir: Dir = semis === 0 ? '→' : semis > 0 ? '↑' : '↓';
-    const name: IntervalName = names[Math.abs(semis) % 12];
-    const lab: IntervalLabel = `${dir}${name}`;
-    return { from: a, to: b, semitones: semis, label: lab };
+    const steps = Math.abs(semis);
+    const info: IntervalMeta = INTERVAL_INFO[steps % INTERVAL_INFO.length];
+    const octaves = Math.floor(steps / 12);
+
+    let intervalName: string = info.label;
+    if (octaves > 0 && info.quality) {
+      const size = info.baseNumber + octaves * 7;
+      intervalName = `${info.quality}${size}`;
+    } else if (octaves > 0) {
+      intervalName = `${info.label} (+${octaves} oktav)`;
+    }
+
+    const baseLabel = `${dir}${info.label}`;
+    const label = `${dir}${intervalName}`;
+    return { from: a, to: b, semitones: semis, octaves, baseLabel, label };
   }
 
   onMount(() => {
@@ -238,6 +264,10 @@
   function resetNotes() {
     notesArray = [];
   }
+
+  function resetIntervals() {
+    intervalArray = [];
+  }
 </script>
 
 <p class="opacity-60 text-sm">Seviye (dBFS): {noteDb.toFixed(1)}</p>
@@ -289,6 +319,33 @@
             <button class="text-xs px-2 py-1 rounded border" on:click={() => clearUpToIndex(i)}>
               ⟵ buraya kadar sil
             </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+
+  <!-- Aralık Geçmişi -->
+  <div class="p-4 rounded border space-y-3">
+    <div class="flex items-center justify-between">
+      <div class="text-sm opacity-60">Aralık Geçmişi (0 = en eski)</div>
+      <button
+        class="px-3 py-1 rounded border disabled:opacity-50 disabled:pointer-events-none"
+        on:click={resetIntervals}
+        disabled={intervalArray.length === 0}
+      >
+        Hepsini sil
+      </button>
+    </div>
+
+    {#if intervalArray.length === 0}
+      <div class="text-sm opacity-60">Henüz aralık kaydı yok.</div>
+    {:else}
+      <ul class="space-y-1">
+        {#each intervalArray as iv, i}
+          <li class="flex items-center justify-between gap-3">
+            <span class="font-mono">{i}.</span>
+            <span class="flex-1">{iv}</span>
           </li>
         {/each}
       </ul>
